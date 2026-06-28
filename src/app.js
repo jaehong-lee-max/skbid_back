@@ -166,9 +166,11 @@ app.post("/api/script_template", async (req, res) => {
     });
   }
 });
-
 app.get("/api/script_template_list", async (req, res) => {
   try {
+    const hasPaging =
+      req.query.page !== undefined && req.query.limit !== undefined;
+
     const limit = Number(req.query.limit || 10);
     const page = Number(req.query.page || 1);
     const writer = (req.query.writer || "").trim();
@@ -189,6 +191,7 @@ app.get("/api/script_template_list", async (req, res) => {
       where.push("title LIKE ?");
       params.push(`%${title}%`);
     }
+
     if (writer) {
       where.push("writer LIKE ?");
       params.push(`%${writer}%`);
@@ -206,26 +209,50 @@ app.get("/api/script_template_list", async (req, res) => {
 
     const whereSQL = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
-    const [rows] = await pool.query(
-      `
-      SELECT
-        id,
-        title,
-        openning,
-        service,
-        tempting,
-        if_ban,
-        added_question,
-        ending,
-        writer,
-        created_at
-      FROM script_template
-      ${whereSQL}
-      ORDER BY id DESC
-      LIMIT ? OFFSET ?
-      `,
-      [...params, limit, offset],
-    );
+    let rows;
+
+    if (hasPaging) {
+      [rows] = await pool.query(
+        `
+        SELECT
+          id,
+          title,
+          openning,
+          service,
+          tempting,
+          if_ban,
+          added_question,
+          ending,
+          writer,
+          created_at
+        FROM script_template
+        ${whereSQL}
+        ORDER BY id DESC
+        LIMIT ? OFFSET ?
+        `,
+        [...params, limit, offset],
+      );
+    } else {
+      [rows] = await pool.query(
+        `
+        SELECT
+          id,
+          title,
+          openning,
+          service,
+          tempting,
+          if_ban,
+          added_question,
+          ending,
+          writer,
+          created_at
+        FROM script_template
+        ${whereSQL}
+        ORDER BY id DESC
+        `,
+        params,
+      );
+    }
 
     const [[{ total }]] = await pool.query(
       `
@@ -238,10 +265,10 @@ app.get("/api/script_template_list", async (req, res) => {
 
     return res.json({
       total,
-      page,
-      limit,
-      offset,
-      totalPages: Math.ceil(total / limit),
+      page: hasPaging ? page : 1,
+      limit: hasPaging ? limit : total,
+      offset: hasPaging ? offset : 0,
+      totalPages: hasPaging ? Math.ceil(total / limit) : 1,
       items: rows,
     });
   } catch (err) {
@@ -370,9 +397,11 @@ app.post("/api/clients_groups", async (req, res) => {
     });
   }
 });
-
 app.get("/api/clients_groups_list", async (req, res) => {
   try {
+    const hasPaging =
+      req.query.page !== undefined && req.query.limit !== undefined;
+
     const limit = Number(req.query.limit || 10);
     const page = Number(req.query.page || 1);
 
@@ -411,22 +440,42 @@ app.get("/api/clients_groups_list", async (req, res) => {
 
     const whereSQL = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
-    const [rows] = await pool.query(
-      `
-      SELECT
-        id,
-        writer,
-        created_at,
-        members_number,
-        payload,
-        group_name
-      FROM clients_groups
-      ${whereSQL}
-      ORDER BY id DESC
-      LIMIT ? OFFSET ?
-      `,
-      [...params, limit, offset],
-    );
+    let rows;
+
+    if (hasPaging) {
+      [rows] = await pool.query(
+        `
+        SELECT
+          id,
+          writer,
+          created_at,
+          members_number,
+          payload,
+          group_name
+        FROM clients_groups
+        ${whereSQL}
+        ORDER BY id DESC
+        LIMIT ? OFFSET ?
+        `,
+        [...params, limit, offset],
+      );
+    } else {
+      [rows] = await pool.query(
+        `
+        SELECT
+          id,
+          writer,
+          created_at,
+          members_number,
+          payload,
+          group_name
+        FROM clients_groups
+        ${whereSQL}
+        ORDER BY id DESC
+        `,
+        params,
+      );
+    }
 
     const [[{ total }]] = await pool.query(
       `
@@ -439,10 +488,10 @@ app.get("/api/clients_groups_list", async (req, res) => {
 
     return res.json({
       total,
-      page,
-      limit,
-      offset,
-      totalPages: Math.ceil(total / limit),
+      page: hasPaging ? page : 1,
+      limit: hasPaging ? limit : total,
+      offset: hasPaging ? offset : 0,
+      totalPages: hasPaging ? Math.ceil(total / limit) : 1,
       items: rows,
     });
   } catch (err) {
@@ -492,6 +541,209 @@ app.delete("/api/clients_groups", async (req, res) => {
 
     return res.status(500).json({
       message: "발신대상 그룹 삭제 중 오류가 발생했습니다.",
+    });
+  }
+});
+
+app.post("/api/campaign", async (req, res) => {
+  const conn = await pool.getConnection();
+
+  try {
+    const {
+      campaign_title,
+      campaign_desc,
+      ai_agents,
+      target_group_ids,
+      script_json,
+      transfer_conditions,
+      call_settings,
+      status,
+    } = req.body;
+
+    if (!campaign_title) {
+      return res.json({
+        ok: false,
+        message: "캠페인 제목을 입력해 주세요.",
+      });
+    }
+
+    if (!target_group_ids || !target_group_ids.length) {
+      return res.json({
+        ok: false,
+        message: "발신 대상 그룹을 선택해 주세요.",
+      });
+    }
+
+    if (!script_json) {
+      return res.json({
+        ok: false,
+        message: "스크립트를 입력해 주세요.",
+      });
+    }
+
+    if (!call_settings) {
+      return res.json({
+        ok: false,
+        message: "발신 설정이 없습니다.",
+      });
+    }
+
+    const [result] = await conn.query(
+      `
+      INSERT INTO campaign
+      (
+        campaign_title,
+        campaign_desc,
+        ai_agents,
+        target_group_ids,
+        script_json,
+        transfer_conditions,
+        call_settings,
+        status,
+        created_at
+      )
+      VALUES
+      (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+      `,
+      [
+        campaign_title,
+        campaign_desc || "",
+        JSON.stringify(ai_agents || []),
+        JSON.stringify(target_group_ids || []),
+        JSON.stringify(script_json || {}),
+        JSON.stringify(transfer_conditions || {}),
+        JSON.stringify(call_settings || {}),
+        status || "TEMP",
+      ],
+    );
+
+    return res.json({
+      ok: true,
+      message: "캠페인이 저장되었습니다.",
+      id: result.insertId,
+    });
+  } catch (err) {
+    console.error("campaign create error:", err);
+
+    return res.status(500).json({
+      ok: false,
+      message: "캠페인 저장 중 오류가 발생했습니다.",
+    });
+  } finally {
+    conn.release();
+  }
+});
+
+app.get("/api/campaign_list", async (req, res) => {
+  try {
+    const hasPaging =
+      req.query.page !== undefined && req.query.limit !== undefined;
+
+    const limit = Number(req.query.limit || 10);
+    const page = Number(req.query.page || 1);
+
+    const offset =
+      req.query.offset !== undefined
+        ? Number(req.query.offset)
+        : (page - 1) * limit;
+
+    const campaign_title = (req.query.campaign_title || "").trim();
+    const status = (req.query.status || "").trim();
+    const startDate = (req.query.startDate || "").trim();
+    const endDate = (req.query.endDate || "").trim();
+
+    const where = [];
+    const params = [];
+
+    if (campaign_title) {
+      where.push("campaign_title LIKE ?");
+      params.push(`%${campaign_title}%`);
+    }
+
+    if (status) {
+      where.push("status = ?");
+      params.push(status);
+    }
+
+    if (startDate) {
+      where.push("DATE(created_at) >= ?");
+      params.push(startDate);
+    }
+
+    if (endDate) {
+      where.push("DATE(created_at) <= ?");
+      params.push(endDate);
+    }
+
+    const whereSQL = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+    let rows;
+
+    if (hasPaging) {
+      [rows] = await pool.query(
+        `
+        SELECT
+          id,
+          campaign_title,
+          campaign_desc,
+          ai_agents,
+          target_group_ids,
+          script_json,
+          transfer_conditions,
+          call_settings,
+          status,
+          created_at
+        FROM campaign
+        ${whereSQL}
+        ORDER BY id DESC
+        LIMIT ? OFFSET ?
+        `,
+        [...params, limit, offset],
+      );
+    } else {
+      [rows] = await pool.query(
+        `
+        SELECT
+          id,
+          campaign_title,
+          campaign_desc,
+          ai_agents,
+          target_group_ids,
+          script_json,
+          transfer_conditions,
+          call_settings,
+          status,
+          created_at
+        FROM campaign
+        ${whereSQL}
+        ORDER BY id DESC
+        `,
+        params,
+      );
+    }
+
+    const [[{ total }]] = await pool.query(
+      `
+      SELECT COUNT(*) AS total
+      FROM campaign
+      ${whereSQL}
+      `,
+      params,
+    );
+
+    return res.json({
+      total,
+      page: hasPaging ? page : 1,
+      limit: hasPaging ? limit : total,
+      offset: hasPaging ? offset : 0,
+      totalPages: hasPaging ? Math.ceil(total / limit) : 1,
+      items: rows,
+    });
+  } catch (err) {
+    console.error("campaign list error:", err);
+
+    return res.status(500).json({
+      message: "캠페인 목록 조회에 실패하였습니다.",
     });
   }
 });
